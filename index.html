@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pushup Pose Detection</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <style>
+        body { text-align: center; font-family: Arial, sans-serif; }
+        video, canvas { position: absolute; left: 50%; transform: translateX(-50%); top: 10%; }
+        #warning { position: absolute; top: 5%; left: 50%; transform: translateX(-50%); color: red; font-size: 24px; font-weight: bold; }
+        #stats { position: absolute; top: 80%; left: 10%; color: white; font-size: 18px; text-align: left; }
+    </style>
+</head>
+<body>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div id="warning"></div>
+    <div id="stats"></div>
+    <audio id="elbowAudio" src="elbows.mp3" preload="auto"></audio>
+    <audio id="backAudio" src="back.mp3" preload="auto"></audio>
+    
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const warningText = document.getElementById('warning');
+        const statsText = document.getElementById('stats');
+        const elbowAudio = document.getElementById('elbowAudio');
+        const backAudio = document.getElementById('backAudio');
+        
+        // Variables for rep counting
+        let repCount = 0;
+        let elbowDown = false;
+        let isAudioPlaying = false;
+        
+        const pose = new Pose({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
+        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+
+        navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            };
+        });
+
+        function calculateAngle(a, b, c) {
+            const ba = { x: a.x - b.x, y: a.y - b.y };
+            const bc = { x: c.x - b.x, y: c.y - b.y };
+            const dotProduct = ba.x * bc.x + ba.y * bc.y;
+            const magnitudeBA = Math.sqrt(ba.x ** 2 + ba.y ** 2);
+            const magnitudeBC = Math.sqrt(bc.x ** 2 + bc.y ** 2);
+            const angle = Math.acos(dotProduct / (magnitudeBA * magnitudeBC)) * (180 / Math.PI);
+            return angle;
+        }
+        
+        function playFeedback(audioElement) {
+            if (!isAudioPlaying && audioElement.paused) {
+                isAudioPlaying = true;
+                audioElement.play();
+                audioElement.onended = () => {
+                    isAudioPlaying = false;
+                };
+            }
+        }
+
+        pose.onResults(results => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            if (results.poseLandmarks) {
+                // Draw pose landmarks and connections
+                drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                drawLandmarks(ctx, results.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+
+                const landmarks = results.poseLandmarks;
+                
+                // Get required landmarks for pushup form analysis
+                const rightShoulder = landmarks[12]; // RIGHT_SHOULDER
+                const rightHip = landmarks[24]; // RIGHT_HIP
+                const rightAnkle = landmarks[28]; // RIGHT_ANKLE
+                const rightElbow = landmarks[14]; // RIGHT_ELBOW
+                const rightWrist = landmarks[16]; // RIGHT_WRIST
+                
+                // Calculate angles for form analysis
+                const elbowAngle = calculateAngle(rightShoulder, rightElbow, rightWrist);
+                const backAngle = calculateAngle(rightShoulder, rightHip, rightAnkle);
+                
+                // Display angles
+                ctx.fillStyle = "white";
+                ctx.font = "18px Arial";
+                ctx.fillText(`Elbow Angle: ${Math.round(elbowAngle)}°`, 50, 50);
+                ctx.fillText(`Back Angle: ${Math.round(backAngle)}°`, 50, 80);
+                
+                // Check for rep counting (when elbow angle goes below threshold and back up)
+                if (elbowAngle < 90 && !elbowDown) {
+                    elbowDown = true;
+                } else if (elbowAngle > 160 && elbowDown) {
+                    elbowDown = false;
+                    repCount++;
+                }
+                
+                // Check for form issues
+                const backIssue = backAngle < 160 || backAngle > 200; // Back should be straight
+                const elbowIssue = elbowAngle < 70; // Elbows shouldn't go too low
+                
+                // Handle warnings and audio feedback
+                if (backIssue) {
+                    warningText.innerText = "Keep your back straight!";
+                    playFeedback(backAudio);
+                } 
+                else if (elbowIssue) {
+                    warningText.innerText = "Watch your elbow position!";
+                    playFeedback(elbowAudio);
+                }
+                else {
+                    warningText.innerText = "";
+                }
+                
+                // Update stats
+                statsText.innerText = `Pushup Count: ${repCount}`;
+            }
+        });
+
+        const camera = new Camera(video, {
+            onFrame: async () => { await pose.send({ image: video }); },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
